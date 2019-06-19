@@ -243,7 +243,6 @@ def run_module():
     elif module.params['state'] == 'unmanaged':
         unmanage_node(module)
 
-
 def _get_node(module):
     node = {}
     if module.params['node_id'] is not None:
@@ -279,7 +278,6 @@ def _get_node(module):
         node['uri'] = results['results'][0]['Uri']
     return node
 
-
 def _validate_fields(module):
     # Setup properties for new node
     props = {
@@ -292,7 +290,7 @@ def _validate_fields(module):
         'AgentPort':  module.params['snmp_port'],
         'Allow64BitCounters': module.params['snmp_allow_64'],
         'EngineID': module.params['polling_engine'],
-        'External': lambda x: True if polling_method=='EXTERNAL' else False,
+        'External': lambda x: True if module.params['polling_method'] =='EXTERNAL' else False,
     }
 
     # Validate required fields
@@ -325,7 +323,6 @@ def _validate_fields(module):
         props['EngineID'] = 1
 
     return props
-
 
 def _add_wmi_credentials(module, node, **props):
 
@@ -381,8 +378,6 @@ def _add_pollers(module, node, external):
           except Exception:
               module.fail_json(**poller)
 
-
-
 def add_node(module):
 
     # Check if node already exists
@@ -430,7 +425,6 @@ def add_node(module):
 
     module.exit_json()
 
-
 def remove_node(module):
     node = _get_node(module)
     if not node:
@@ -442,7 +436,6 @@ def remove_node(module):
         module.exit_json(**node)
     except Exception as e:
         module.fail_json(msg='Error removing node {}'.format(str(e)), **node)
-
 
 def remanage_node(module):
     node = _get_node(module)
@@ -456,7 +449,6 @@ def remanage_node(module):
         module.exit_json(changed=True, msg="{0} has been remanaged".format(node['caption']))
     except Exception as e:
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
-
 
 def unmanage_node(module):
     now = datetime.utcnow()
@@ -498,7 +490,6 @@ def unmanage_node(module):
 
 def main():
     run_module()
-
 
 if __name__ == "__main__":
     main()
