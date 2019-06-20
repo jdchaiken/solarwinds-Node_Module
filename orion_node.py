@@ -42,6 +42,8 @@ options:
             - absent
             - managed
             - unmanaged
+            - muted
+            - unmuted
         default:
             - managed
     node_id:
@@ -184,6 +186,8 @@ def run_module():
                 'absent',
                 'managed',
                 'unmanaged',
+                'muted',
+                'unmuted',
             ],
             'default': 'managed'
         },
@@ -487,6 +491,57 @@ def unmanage_node(module):
         module.exit_json(changed=True,  msg=msg)
     except Exception as e:
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
+
+def mute_node(module):
+    
+    #Check if Node exists 
+    node = _get_node(module)
+
+    if not node:
+        module.fail_json(msg='Node not found')
+
+    # Check if already muted
+    supressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    
+    # If already muted, check if parameters changed
+    if supressed['suppressFrom'] == module.params['unmanage_from'] and suppressed['suppressUntil'] == module.params['unmanage_until']:
+        node['changed']=False
+        module.exit_json(state=changed, ansible_facts=node)
+
+    # Otherwise Mute Node with given parameters
+    try:
+        __SWIS__.invoke(
+            'Orion.AlertSuppression',
+            'SuppressAlerts', 
+            EntityUris=[node['uri']], 
+            suppressFrom=module.params['unmanage_from'],
+            suppressUntil =  module.params['unmanage_until']
+        )    
+        node['changed'] = True
+        module.exit_json(changed=True, ansible_facts=node)
+    except:
+        module.fail_json(msg="Unable to mute {0}".format(node['caption']), ansible_facts=node)
+
+    
+
+    
+def unmute_node(module):
+    
+    node = _get_node(module)
+    if not node:
+        module.fail_json(msg='Node not found')
+    
+    # Check if already muted
+    supressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    
+    if not suppresed:
+        node['changed'] = False
+        module.exit_json(changed=False, ansible_facts=node)
+    else:
+        __SWIS__.invoke('Orion.AlertSuppression', 'ResumeAlerts', entityUris=[node['uri']])
+        node['changed'] = True
+        module.exit_json(changed=True, ansible_facts=node)
+
 
 def main():
     run_module()
