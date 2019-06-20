@@ -308,7 +308,7 @@ def _validate_fields(module):
     if not props['ObjectSubType']:
         module.fail_json(msg='Polling Method is required [External, SNMP, ICMP, WMI, Agent]')
     elif props['ObjectSubType'] == 'SNMP':
-        if not ro_community_string:
+        if not props['ro_community_string']:
             module.fail_json(msg='Read-Only Community String is required')
     elif props['ObjectSubType'] == 'WMI':
         if not props['wmi_credential']:
@@ -378,7 +378,7 @@ def _add_pollers(module, node, external):
       for poller in pollers:
           print("Adding poller type: {} with status {}...".format(poller['PollerType'], poller['Enabled']), end="")
           try:
-              response = __SWIS__.create('Orion.Pollers', **poller)
+              __SWIS__.create('Orion.Pollers', **poller)
           except Exception:
               module.fail_json(**poller)
 
@@ -395,7 +395,7 @@ def add_node(module):
 
     # Add Node
     try:
-        results = __SWIS__.create('Orion.Nodes', **props)
+        __SWIS__.create('Orion.Nodes', **props)
         node['changed'] = True
     except Exception as e:
         module.fail_json(msg='Failed to add {}'.format(str(e)), **props)
@@ -501,12 +501,12 @@ def mute_node(module):
         module.fail_json(msg='Node not found')
 
     # Check if already muted
-    supressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
     
     # If already muted, check if parameters changed
-    if supressed['suppressFrom'] == module.params['unmanage_from'] and suppressed['suppressUntil'] == module.params['unmanage_until']:
+    if suppressed['suppressFrom'] == module.params['unmanage_from'] and suppressed['suppressUntil'] == module.params['unmanage_until']:
         node['changed']=False
-        module.exit_json(state=changed, ansible_facts=node)
+        module.exit_json(changed=True, ansible_facts=node)
 
     # Otherwise Mute Node with given parameters
     try:
@@ -532,9 +532,9 @@ def unmute_node(module):
         module.fail_json(msg='Node not found')
     
     # Check if already muted
-    supressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
     
-    if not suppresed:
+    if not suppressed:
         node['changed'] = False
         module.exit_json(changed=False, ansible_facts=node)
     else:
