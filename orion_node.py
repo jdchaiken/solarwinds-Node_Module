@@ -40,7 +40,7 @@ options:
         choices:
             - present
             - absent
-            - managed
+            - remanaged
             - unmanaged
         default:
             - managed
@@ -182,7 +182,7 @@ def run_module():
             'choices': [
                 'present',
                 'absent',
-                'managed',
+                'remanaged',
                 'unmanaged',
             ],
             'default': 'managed'
@@ -238,7 +238,7 @@ def run_module():
         add_node(module)
     elif module.params['state'] == 'absent':
         remove_node(module)
-    elif module.params['state'] == 'managed':
+    elif module.params['state'] == 'remanaged':
         remanage_node(module)
     elif module.params['state'] == 'unmanaged':
         unmanage_node(module)
@@ -306,7 +306,7 @@ def _validate_fields(module):
     if not props['ObjectSubType']:
         module.fail_json(msg='Polling Method is required [External, SNMP, ICMP, WMI, Agent]')
     elif props['ObjectSubType'] == 'SNMP':
-        if not ro_community_string:
+        if not props['Community']:
             module.fail_json(msg='Read-Only Community String is required')
     elif props['ObjectSubType'] == 'WMI':
         if not props['wmi_credential']:
