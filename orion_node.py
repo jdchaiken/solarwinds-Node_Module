@@ -295,6 +295,7 @@ def _validate_fields(module):
         'Allow64BitCounters': module.params['snmp_allow_64'],
         'EngineID': module.params['polling_engine'],
         'External': lambda x: True if module.params['polling_method'] =='EXTERNAL' else False,
+        'State': module.params['state'],
     }
 
     # Validate required fields
@@ -308,11 +309,7 @@ def _validate_fields(module):
     if not props['ObjectSubType']:
         module.fail_json(msg='Polling Method is required [External, SNMP, ICMP, WMI, Agent]')
     elif props['ObjectSubType'] == 'SNMP':
-<<<<<<< HEAD
         if not props['Community']:
-=======
-        if not props['ro_community_string']:
->>>>>>> 5bc42badb0525019831b8a95cb6ebb66e9819f12
             module.fail_json(msg='Read-Only Community String is required')
     elif props['ObjectSubType'] == 'WMI':
         if not props['wmi_credential']:
@@ -329,6 +326,10 @@ def _validate_fields(module):
 
     if not props['EngineID']:
         props['EngineID'] = 1
+
+    if props['State'] == 'present':
+        if not props['name']:
+            module.fail_json(msg='Node name is required')
 
     return props
 
@@ -497,8 +498,8 @@ def unmanage_node(module):
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
 
 def mute_node(module):
-    
-    #Check if Node exists 
+
+    #Check if Node exists
     node = _get_node(module)
 
     if not node:
@@ -506,7 +507,7 @@ def mute_node(module):
 
     # Check if already muted
     suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
-    
+
     # If already muted, check if parameters changed
     if suppressed['suppressFrom'] == module.params['unmanage_from'] and suppressed['suppressUntil'] == module.params['unmanage_until']:
         node['changed']=False
@@ -520,24 +521,21 @@ def mute_node(module):
             EntityUris=[node['uri']], 
             suppressFrom=module.params['unmanage_from'],
             suppressUntil =  module.params['unmanage_until']
-        )    
+        )
         node['changed'] = True
         module.exit_json(changed=True, ansible_facts=node)
     except:
         module.fail_json(msg="Unable to mute {0}".format(node['caption']), ansible_facts=node)
 
-    
 
-    
 def unmute_node(module):
-    
     node = _get_node(module)
     if not node:
         module.fail_json(msg='Node not found')
-    
+
     # Check if already muted
     suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
-    
+
     if not suppressed:
         node['changed'] = False
         module.exit_json(changed=False, ansible_facts=node)
