@@ -135,7 +135,7 @@ requirements:
     - orionsdk
     - datetime
     - requests
-    - traceback        
+    - traceback
 '''
 
 EXAMPLES = '''
