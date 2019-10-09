@@ -101,7 +101,7 @@ options:
     snmp_version:
         description:
             - SNMPv2c is used by default
-            - SNMPv3 not support at this time
+            - SNMPv3 not supported at this time
         choices:
             - 2
         default: 'snmpv2c'
