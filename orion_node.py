@@ -148,6 +148,20 @@ EXAMPLES = '''
 	password: Orion Password
 	name: servername
 	state: absent
+    
+- name: Mute hosts
+  hosts: all
+  gather_facts: no
+  tasks: 
+    - orion_node:
+        hostname: "{{solarwinds_host}}"
+        username: "{{solarwinds_username}}"
+        password: "{{solarwinds_password}}"
+        name: "{{inventory_hostname}}"
+        state: muted       
+        unmanage_from: "2020-03-13T20:58:22.033"
+        unmanage_until: "2020-03-14T20:58:22.033"
+      delegate_to: localhost
 '''
 
 import traceback
@@ -194,8 +208,8 @@ def run_module():
         'node_id': {'required': False},
         'ip_address': {'required': False},
         'name': {'required': False},
-        'unmanage_from': {'required': False, 'default': None},
-        'unmanage_until': {'required': False, 'default': None},
+        'unmanage_from': {'required': False, 'default': "None"},
+        'unmanage_until': {'required': False, 'default': "None"},
         'polling_method': {
             'required': False,
             'choices': [
@@ -246,6 +260,10 @@ def run_module():
         remanage_node(module)
     elif module.params['state'] == 'unmanaged':
         unmanage_node(module)
+    elif module.params['state'] == 'muted':
+        mute_node(module)
+    elif module.params['state'] == 'unmuted':
+        unmute_node(module)
 
 def _get_node(module):
     node = {}
@@ -449,9 +467,9 @@ def remove_node(module):
 def remanage_node(module):
     node = _get_node(module)
     if not node:
-        module.fail_json(msg='Node not found')
+        module.fail_json(skipped=True, msg='Node not found')
     elif not node['unmanaged']:
-        module.exit_json(changed=False)
+        module.fail_json(changed=False)
 
     try:
         __SWIS__.invoke('Orion.Nodes', 'Remanage', node['netobjectid'])
@@ -474,7 +492,7 @@ def unmanage_node(module):
         unmanage_until = tomorrow
 
     if not node:
-        module.fail_json(msg='Node not found')
+        module.fail_json(skipped=True, msg='Node not found')
     elif node['unmanaged']:
         if unmanage_from == node['unManageFrom'] and unmanage_until == node['unManageUntil']:
             module.exit_json(changed=False)
@@ -498,49 +516,52 @@ def unmanage_node(module):
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
 
 def mute_node(module):
-
+    now = datetime.now()
+    tomorrow = now + timedelta(days=1)
     #Check if Node exists
     node = _get_node(module)
-
     if not node:
-        module.fail_json(msg='Node not found')
+        module.exit_json(skipped=True, msg='Node not found')
+
+    unmanage_from = module.params['unmanage_from']
+    unmanage_until = module.params['unmanage_until']
+
+    if unmanage_from == "None":
+        unmanage_from = now
+    if unmanage_until == "None":
+        unmanage_until = tomorrow
+    
 
     # Check if already muted
-    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])[0]
 
-    # If already muted, check if parameters changed
-    if suppressed['suppressFrom'] == module.params['unmanage_from'] and suppressed['suppressUntil'] == module.params['unmanage_until']:
+    # If already muted, exit
+    if suppressed['SuppressedFrom'] == unmanage_from and suppressed['SuppressedUntil'] == unmanage_until:
         node['changed']=False
-        module.exit_json(changed=True, ansible_facts=node)
+        module.exit_json(changed=False, ansible_facts=node)
 
     # Otherwise Mute Node with given parameters
     try:
-        __SWIS__.invoke(
-            'Orion.AlertSuppression',
-            'SuppressAlerts', 
-            EntityUris=[node['uri']], 
-            suppressFrom=module.params['unmanage_from'],
-            suppressUntil =  module.params['unmanage_until']
-        )
+        __SWIS__.invoke('Orion.AlertSuppression', 'SuppressAlerts', [node['uri']], unmanage_from, unmanage_until)
         node['changed'] = True
         module.exit_json(changed=True, ansible_facts=node)
-    except:
-        module.fail_json(msg="Unable to mute {0}".format(node['caption']), ansible_facts=node)
-
+    except Exception as e:
+        #module.fail_json(msg="Unable to mute {0}".format(node['caption']), ansible_facts=node)
+        module.fail_json(msg=to_native(e), exception=traceback.format_exc())
 
 def unmute_node(module):
     node = _get_node(module)
     if not node:
-        module.fail_json(msg='Node not found')
+        module.exit_json(skipped=True, msg='Node not found')
 
     # Check if already muted
-    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])
+    suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])[0]
 
-    if not suppressed:
+    if suppressed['SuppressionMode'] == 0:
         node['changed'] = False
         module.exit_json(changed=False, ansible_facts=node)
     else:
-        __SWIS__.invoke('Orion.AlertSuppression', 'ResumeAlerts', entityUris=[node['uri']])
+        __SWIS__.invoke('Orion.AlertSuppression', 'ResumeAlerts',[node['uri']])
         node['changed'] = True
         module.exit_json(changed=True, ansible_facts=node)
 
