@@ -469,7 +469,7 @@ def remanage_node(module):
     if not node:
         module.fail_json(skipped=True, msg='Node not found')
     elif not node['unmanaged']:
-        module.fail_json(changed=False)
+        module.fail_json(changed=False, msg='Node is not currently unmanaged')
 
     try:
         __SWIS__.invoke('Orion.Nodes', 'Remanage', node['netobjectid'])
