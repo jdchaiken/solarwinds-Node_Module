@@ -1,22 +1,23 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+# Copyright: (c) 2021, Ashley Hooper <ashleyghooper@gmail.com>
 # Copyright: (c) 2019, Jarett D. Chaiken <jdc@salientcg.com>
 # GNU General Public License v3.0+
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '1.1',
+    'metadata_version': '2.0.0',
     'status': ['preview'],
     'supported_by': 'community',
 }
 
-DOCUMENTATION = '''
+DOCUMENTATION = r'''
 ---
 module: orion_node
-short_description: Created/Removes/Edits Nodes in Solarwinds Orion NPM
+short_description: Creates/Removes/Edits Nodes in Solarwinds Orion NPM
 description:
-    - "Create/Remove Nodes in Orion NPM"
+    - Create/Remove/Edit Nodes in SolarWinds Orion NPM.
 version_added: "2.7"
 author: "Jarett D Chaiken (@jdchaiken)"
 options:
@@ -27,7 +28,7 @@ options:
     username:
         description:
             - Orion Username
-            - Active Directory users must use DOMAIN\\username format
+            - Active Directory users may use DOMAIN\\username or username@DOMAIN format
         required: true
     password:
         description:
@@ -45,7 +46,7 @@ options:
             - muted
             - unmuted
         default:
-            - managed
+            - remanaged
     node_id:
         description:
             - node_id of the node
@@ -80,7 +81,7 @@ options:
         description:
             - Polling method to use
         choices:
-            - external_node
+            - External
             - icmp
             - snmp
             - WMI
@@ -89,65 +90,74 @@ options:
             - meraki
         default: snmp
         required: false
-    ro_community_string:
+    polling_engine_name:
         description:
-            - SNMP Read-Only Community string
-            - "Note: Required if using snmp polling"
+            - Name of polling engine that NPM will use to poll this device
         required: false
-    rw_community_string:
+        type: str
+    polling_engine_id:
         description:
-            - SNMP Read-Write Community string
+            - ID of polling engine that NPM will use to poll this device
         required: false
+        type: int
     snmp_version:
         description:
             - SNMPv2c is used by default
-            - SNMPv3 not supported at this time
+            - SNMPv3 requires use of existing, named SNMPv3 credentials within Orion
         choices:
             - 2
-        default: 'snmpv2c'
-        requried: false
+            - 3
+        default: 2
+        required: false
+        type: int
     snmp_port:
         description:
             - port that SNMP server listens on
         required: false
-        default: '161'
+        default: 161
+        type: int
     snmp_allow_64:
         description:
             - Set true if device supports 64-bit counters
         type: bool
         default: true
         required: false
-    wmi_credential:
+    credential_name:
         description:
-            - 'Credential Name already configured in NPM  Found under "Manage Windows Credentials" section of the Orion website (Settings)'
-            - "Note: creation of credentials are not supported at this time"
-            - Required if using WMI polling
-        required: false
-    polling_engine:
+            - The named, existing credential to use to manage this device
+        required: true
+        type: str
+    interface_filters:
         description:
-            - ID of polling engine that NPM will use to poll this device
+            - List of SolarWinds Orion interface discovery filters
         required: false
+        type: list
+    volume_filters:
+        description:
+            - List of regular expressions by which to exclude volumes from monitoring
+        required: false
+        type: list
     custom_properties:
         description:
-            - A list of custom properties and their values
+            - A dictionary containing custom properties and their values
         required: false
+        type: dict
 requirements:
     - orionsdk
     - datetime
+    - dateutil
     - requests
     - traceback
 '''
 
-EXAMPLES = '''
----
-
+EXAMPLES = r'''
 - name:  Remove a node from Orion
   orion_node:
-	hostname: "<Hostname of orion server>"
-	username: Orion Username
-	password: Orion Password
-	name: servername
-	state: absent
+    hostname: "<Hostname of orion server>"
+    username: Orion Username
+    password: Orion Password
+    name: servername
+    state: absent
     
 - name: Mute hosts
   hosts: all
@@ -165,13 +175,14 @@ EXAMPLES = '''
 '''
 
 import traceback
-from datetime import datetime, timedelta
-import string
-import re
+from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse
+import re
 import requests
+import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils._text import to_native
+
 try:
     from orionsdk import SwisClient
     HAS_ORION = True
@@ -213,22 +224,22 @@ def run_module():
         'polling_method': {
             'required': False,
             'choices': [
-                'External',
-                'ICMP',
-                'SNMP',
-                'WMI',
-                'Agent'],
-            'default': 'SNMP'
+                'external',
+                'icmp',
+                'snmp',
+                'wmi',
+                'agent'],
+            'default': 'snmp'
         },
-        'ro_community_string': {'required': False, 'no_log': True},
-        'rw_community_string': {'required': False, 'no_log': True},
-        'snmp_version': {'required': False, 'default': '2'},
-        'snmp_port': {'required': False, 'default': '161'},
+        'polling_engine_name': {'required': False},
+        'polling_engine_id': {'required': False},
+        'snmp_version': {'required': False, 'default': 2},
+        'snmp_port': {'required': False, 'default': 161},
         'snmp_allow_64': {'required': False, 'default': True},
-        'wmi_credential': {'required': False, 'no_log': True},
-        'polling_engine': {'required': False},
-        'custom_properties': {'required': False, 'default': {}}
-
+        'credential_name': {'required': False},
+        'interface_filters': {'required': False, 'type': 'list', 'default': []},
+        'volume_filters': {'required': False, 'type': 'list', 'default': []},
+        'custom_properties': {'required': False, 'type': 'dict', 'default': {}}
     }
 
     module = AnsibleModule(argument_spec=module_args, supports_check_mode=True)
@@ -284,7 +295,7 @@ def _get_node(module):
             "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri "
             "FROM Orion.Nodes WHERE Caption like "
             "@name",
-            name='%'+module.params['name']+'%'
+            name=module.params['name']
         )
     else:
         # No Id provided
@@ -300,157 +311,245 @@ def _get_node(module):
         node['uri'] = results['results'][0]['Uri']
     return node
 
+def _get_credential_id(module):
+    credential_name = module.params['credential_name']
+    try:
+        credentials_res = __SWIS__.query("SELECT ID FROM Orion.Credential WHERE Name = @name", name = credential_name)
+        try:
+            return next(c for c in credentials_res['results'])['ID']
+        except Exception as e:
+            module.fail_json(msg='Failed to query credential {}'.format(str(e)))
+    except Exception as e:
+        module.fail_json(msg='Failed to query credentials {}'.format(str(e)))
+
+def _get_polling_engine_id(module):
+    polling_engine_name = module.params['polling_engine_name']
+    try:
+        engines_res = __SWIS__.query("SELECT EngineID, ServerName, PollingCompletion FROM Orion.Engines WHERE ServerName = @engine_name", engine_name = polling_engine_name)
+        return next(e for e in engines_res['results'])['EngineID']
+    except Exception as e:
+        module.fail_json(msg='Failed to query polling engines {}'.format(str(e)))
+
 def _validate_fields(module):
+    params = module.params
     # Setup properties for new node
+    # module.fail_json(msg='FAIL NOW', **params)
     props = {
-        'IPAddress': module.params['ip_address'],
-        'Caption': module.params['name'],
-        'ObjectSubType': module.params['polling_method'].upper(),
-        'Community': module.params['ro_community_string'],
-        'RWCommunity': module.params['rw_community_string'],
-        'SNMPVersion': module.params['snmp_version'],
-        'AgentPort':  module.params['snmp_port'],
-        'Allow64BitCounters': module.params['snmp_allow_64'],
-        'EngineID': module.params['polling_engine'],
-        'External': lambda x: True if module.params['polling_method'] =='EXTERNAL' else False,
-        'State': module.params['state'],
+        'IPAddress': params['ip_address'],
+        'Caption': params['name'],
+        'ObjectSubType': params['polling_method'].upper(),
+        'SNMPVersion': params['snmp_version'],
+        'AgentPort':  params['snmp_port'],
+        'Allow64BitCounters': params['snmp_allow_64'],
+        'External': True if params['polling_method'] == 'external' else False,
     }
 
     # Validate required fields
     if not props['IPAddress']:
-        module.fail_json(msg='IP Address Parameter is required')
+        module.fail_json(msg='IP Address is required')
 
     if not props['External']:
-      if not props['Caption']:
-          module.fail_json(msg='Node name is required to add a node')
+        if not props['Caption']:
+            module.fail_json(msg='Node name is required')
 
     if not props['ObjectSubType']:
-        module.fail_json(msg='Polling Method is required [External, SNMP, ICMP, WMI, Agent]')
+        module.fail_json(msg='Polling Method is required [external, snmp, icmp, wmi, agent]')
     elif props['ObjectSubType'] == 'SNMP':
-        if not props['Community']:
-            module.fail_json(msg='Read-Only Community String is required')
-    elif props['ObjectSubType'] == 'WMI':
-        if not props['wmi_credential']:
-            module.fail_json(msg='WMI Credential is required')
+        if not props['SNMPVersion']:
+            print("Defaulting to SNMPv2")
+            props['SNMPVersion'] = '2'
+        if not props['AgentPort']:
+            print("Using default SNMP port")
+            props['AgentPort'] = '161'
     elif props['ObjectSubType'] == 'EXTERNAL':
         props['ObjectSubType'] = 'ICMP'
 
-    if not props['SNMPVersion']:
-        props['SNMPVersion'] = 2
-    if not props['AgentPort']:
-        props['AgentPort'] = 161
+    if not params['credential_name']:
+        module.fail_json(msg='A credential name is required')
+
     if not props['Allow64BitCounters']:
         props['Allow64BitCounters'] = True
 
-    if not props['EngineID']:
+    if params['polling_engine_name']:
+        props['EngineID'] =_get_polling_engine_id(module)
+    else:
+        print("Using default polling engine")
         props['EngineID'] = 1
 
-    if props['State'] == 'present':
-        if not props['name']:
+    if params['state'] == 'present':
+        if not props['Caption']:
             module.fail_json(msg='Node name is required')
 
     return props
 
-def _add_wmi_credentials(module, node, **props):
-
-    # Check if passed credential is valid
-    cred = __SWIS__.query(
-          "SELECT ID FROM Orion.Credential WHERE Name = "
-          "@wmi_credential",
-          wmi_credential= module.params['wmi_credential'])
-
-    if cred['ID']:  # Valid credential passed - Add to Orion.NodeSettings
-        nodesettings = {
-            'nodeid': node['nodeid'],
-            'SettingName': 'WMICredential',
-            'SettingValue': str(cred['ID']),
-        }
-        __SWIS__.create('Orion.NodeSettings', **nodesettings)
-    else:  # Invalid Credential
-        module.fail_json(msg='Invalid Credential id {0}'.format(module.params['wmi_credential']), **cred)
-
-def _add_pollers(module, node, external):
-
-    pollers_enabled = {
-        'N.Status.ICMP.Native': True,
-        'N.Status.SNMP.Native': False,
-        'N.ResponseTime.ICMP.Native': True,
-        'N.ResponseTime.SNMP.Native': False,
-        'N.Details.SNMP.Generic': True,
-        'N.Uptime.SNMP.Generic': True,
-        'N.Cpu.SNMP.HrProcessorLoad': True,
-        'N.Memory.SNMP.NetSnmpReal': True,
-        'N.AssetInventory.Snmp.Generic': True,
-        'N.Topology_Layer3.SNMP.ipNetToMedia': False,
-        'N.Routing.SNMP.Ipv4CidrRoutingTable': False
-    }
-
-    if not external:
-      pollers = []
-      for k in pollers_enabled:
-          pollers.append(
-              {
-                  'PollerType': k,
-                  'NetObject': 'N:' + node['nodeid'],
-                  'NetObjectType': 'N',
-                  'NetObjectID': node['nodeid'],
-                  'Enabled': pollers_enabled[k]
-              }
-          )
-
-      for poller in pollers:
-          print("Adding poller type: {} with status {}...".format(poller['PollerType'], poller['Enabled']), end="")
-          try:
-              __SWIS__.create('Orion.Pollers', **poller)
-          except Exception:
-              module.fail_json(**poller)
-
 def add_node(module):
-
-    # Check if node already exists
+    changed = False
+    # Check if node already exists and exit if found
     node = _get_node(module)
-
     if node:
         module.exit_json(changed=False, ansible_facts=node)
 
-    ## Validate Fields
+    # Validate Fields
     props = _validate_fields(module)
 
-    # Add Node
+    # Start to prepare our discovery profile
+    core_plugin_context = {
+        'BulkList': [{'Address': module.params['ip_address']}],
+        'Credentials': [
+            {
+                'CredentialID': _get_credential_id(module),
+                'Order': 1
+            }
+        ],
+        'WmiRetriesCount': 0,
+        'WmiRetryIntervalMiliseconds': 1000
+    }
+
     try:
-        __SWIS__.create('Orion.Nodes', **props)
-        node['changed'] = True
+        core_plugin_config = __SWIS__.invoke('Orion.Discovery', 'CreateCorePluginConfiguration', core_plugin_context)
     except Exception as e:
-        module.fail_json(msg='Failed to add {}'.format(str(e)), **props)
+        module.fail_json(msg='Failed to create core plugin configuration {}'.format(str(e)), **props)
 
-    #### If Node is a WMI node, assign credential
-    if props['ObjectSubType'] == 'WMI':
-      _add_wmi_credentials(module, node, **props)
+    expression_filters = [
+        {"Prop": "Descr", "Op": "!Any", "Val": "null"},
+        {"Prop": "Descr", "Op": "!Any", "Val": "vlan"},
+        {"Prop": "Descr", "Op": "!Any", "Val": "loopback"},
+        {"Prop": "Descr", "Op": "!Regex", "Val": "^$"},
+    ]
+    expression_filters += module.params['interface_filters']
 
+    interfaces_plugin_context = {
+        "AutoImportStatus": ['Up'],
+        "AutoImportVlanPortTypes": ['Trunk', 'Access', 'Unknown'],
+        "AutoImportVirtualTypes": ['Physical', 'Virtual'],
+        "AutoImportExpressionFilter": expression_filters
+    }
 
-    ## Add Pollers
-    _add_pollers(module, node, lambda x: True if props['External'] else False)
+    try:
+        interfaces_plugin_config = __SWIS__.invoke('Orion.NPM.Interfaces', 'CreateInterfacesPluginConfiguration', interfaces_plugin_context)
+    except Exception as e:
+        module.fail_json(msg='Failed to create interfaces plugin configuration {}'.format(str(e)), **props)
 
+    discovery_name = "orion_node.py.{}".format(datetime.now().isoformat())
+    discovery_profile = {
+        'Name': discovery_name,
+        'EngineID': props['EngineID'],
+        'JobTimeoutSeconds': 3600,
+        'SearchTimeoutMiliseconds': 5000,
+        'SnmpTimeoutMiliseconds': 5000,
+        'SnmpRetries': 2,
+        'RepeatIntervalMiliseconds': 1800,
+        'SnmpPort': 161,
+        'HopCount': 0,
+        'PreferredSnmpVersion': 'SNMP3',
+        'DisableIcmp': False,
+        'AllowDuplicateNodes': False,
+        'IsAutoImport': True,
+        'IsHidden': False,
+        'PluginConfigurations': [
+            {'PluginConfigurationItem': core_plugin_config},
+            {'PluginConfigurationItem': interfaces_plugin_config}
+        ]
+    }
 
-    ## Add Custom Properties
-    custom_properties = lambda x: module.params['custom_properties'] if module.params['custom_properties'] else {},
+    # Initiate discovery job with above discovery profile
+    try:
+        discovery_res = __SWIS__.invoke('Orion.Discovery', 'StartDiscovery', discovery_profile)
+        changed = True
+    except Exception as e:
+        module.fail_json(msg='Failed to start node discovery: {}'.format(str(e)), **props)
+    discovery_profile_id = int(discovery_res)
+
+    # Loop until discovery job finished
+    # Discovery job statuses are:
+    # 0 {"Unknown"} 1 {"InProgress"} 2 {"Finished"} 3 {"Error"} 4 {"NotScheduled"} 5 {"Scheduled"} 6 {"NotCompleted"} 7 {"Canceling"} 8 {"ReadyForImport"}
+    # https://github.com/solarwinds/OrionSDK/blob/master/Samples/PowerShell/DiscoverSnmpV3Node.ps1
+    discovery_active = True
+    discovery_iter = 0
+    while discovery_active:
+        try:
+            status_res = __SWIS__.query("SELECT Status FROM Orion.DiscoveryProfiles WHERE ProfileID = @profile_id", profile_id=discovery_profile_id)
+        except Exception as e:
+            module.fail_json(msg='Failed to query node discovery status: {}'.format(str(e)), **props)
+        if len(status_res['results']) > 0:
+            if next(s for s in status_res['results'])['Status'] == 2:
+                discovery_active = False
+        else:
+            discovery_active = False
+        discovery_iter += 1
+        if discovery_iter >= 60:
+            module.fail_json(msg='Timeout while waiting for node discovery job to terminate', **props)
+        time.sleep(1)
+
+    # Retrieve Result and BatchID to find items added to new node by discovery
+    try:
+        discovery_log_res = __SWIS__.query("SELECT Result, ResultDescription, ErrorMessage, BatchID FROM Orion.DiscoveryLogs WHERE ProfileID = @profile_id", profile_id=discovery_profile_id)
+    except Exception as e:
+        module.fail_json(msg='Failed to query discovery logs: {}'.format(str(e)), **props)
+    discovery_log = discovery_log_res['results'][0]
+
+    # Any of the below values for Result indicate a failure, so we'll abort
+    if int(discovery_log['Result']) in [0, 3, 6, 7]:
+        module.fail_json(msg='Node discovery did not complete successfully: {}'.format(str(discovery_log_res)))
+
+    # Look up NodeID of node we discovered. We have to do all of these joins
+    # because mysteriously, the NodeID in the DiscoveredNodes table has no
+    # bearing on the actual NodeID of the host(s) discovered.
+    try:
+        discovered_nodes_res = __SWIS__.query("SELECT n.NodeID FROM Orion.DiscoveryProfiles dp JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID JOIN Orion.Nodes n ON n.Caption = dn.SysName WHERE dp.Name = @discovery_name", discovery_name=discovery_name)
+    except Exception as e:
+        module.fail_json(msg='Failed to query discovered nodes: {}'.format(str(e)), **props)
+    discovered_node_id = discovered_nodes_res['results'][0]['NodeID']
+
+    # Retrieve all items added by discovery profile
+    try:
+        discovered_objects_res = __SWIS__.query("SELECT EntityType, DisplayName, NetObjectID FROM Orion.DiscoveryLogItems WHERE BatchID = @batch_id", batch_id=discovery_log['BatchID'])
+    except Exception as e:
+        module.fail_json(msg='Failed to query discovered objects: {}'.format(str(e)), **props)
+
+    volumes_to_remove = []
+    for entry in discovered_objects_res['results']:
+        if entry['EntityType'] == 'Orion.Volumes':
+            for vol_filter in module.params['volume_filters']:
+                vol_filter_regex = "^{} - ".format(module.params['name']) + vol_filter['regex']
+                if re.search(vol_filter_regex, entry['DisplayName']):
+                    volumes_to_remove.append(entry)
+    if len(volumes_to_remove) > 50:
+        module.fail_json(msg='Too many volumes to remove ({}) - aborting for safety'.format(str(len(volumes_to_remove))), **props)
+
+    volume_removal_uris = []
+    for volume in volumes_to_remove:
+        try:
+            volume_lookup_res = __SWIS__.query("SELECT Uri FROM Orion.Volumes WHERE NodeID = @node_id AND Concat('V:', ToString(VolumeID)) = @net_object_id", node_id=discovered_node_id, net_object_id=volume['NetObjectID'])
+        except Exception as e:
+            module.fail_json(msg='Failed to query Uri for volume to remove: {}'.format(str(e)), **props)
+
+        volume_uri = volume_lookup_res['results'][0]['Uri']
+        if volume_uri:
+            try:
+                __SWIS__.delete(volume_uri)
+            except Exception as e:
+                module.fail_json(msg='Failed to delete volume: {}'.format(str(e)), **props)
+
+    # Add Custom Properties
+    custom_properties = module.params['custom_properties'] if 'custom_properties' in module.params else {}
 
     if not props['External']:
-      try:
-          node = _get_node(module)
-      except Exception as e:
-          module.fail_json(msg='Error adding Custom properties {}'.format(str(e)))
+        try:
+            node = _get_node(module)
+        except Exception as e:
+            module.fail_json(msg='Failed to look up node details {}'.format(str(e)))
 
-      if type(custom_properties) is dict:
-        for k in custom_properties.keys():
-            try:
-                __SWIS__.update(node['Uri'] + '/CustomProperties', k=custom_properties[k])
-                module.exit_json(mgs="{0} has been added".format(node['caption']), **node)
+        if type(custom_properties) is dict:
+            for k in custom_properties.keys():
+                custom_property = { k: custom_properties[k] }
+                try:
+                    __SWIS__.update(node['uri'] + '/CustomProperties', **custom_property)
+                except Exception as e:
+                    module.fail_json(msg='Failed to add custom properties',**node)
 
-            except Exception as e:
-                module.fail_json(msg='Failed to add custom properties',**node)
-
-    module.exit_json()
+    node['changed'] = changed
+    module.exit_json(**node)
 
 def remove_node(module):
     node = _get_node(module)
@@ -470,7 +569,6 @@ def remanage_node(module):
         module.fail_json(skipped=True, msg='Node not found')
     elif not node['unmanaged']:
         module.fail_json(changed=False, msg='Node is not currently unmanaged')
-
     try:
         __SWIS__.invoke('Orion.Nodes', 'Remanage', node['netobjectid'])
         module.exit_json(changed=True, msg="{0} has been remanaged".format(node['caption']))
@@ -478,23 +576,26 @@ def remanage_node(module):
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
 
 def unmanage_node(module):
-    now = datetime.utcnow()
-    tomorrow = now + timedelta(days=1)
-
     node = _get_node(module)
+    if not node:
+        module.fail_json(skipped=True, msg='Node not found')
 
+    now_dt = datetime.now(timezone.utc)
     unmanage_from = module.params['unmanage_from']
     unmanage_until = module.params['unmanage_until']
 
-    if not unmanage_from:
-        unmanage_from = now
-    if not unmanage_until:
-        unmanage_until = tomorrow
+    if unmanage_from != "None":
+        unmanage_from_dt = datetime.fromisoformat(unmanage_from)
+    else:
+        unmanage_from_dt = now_dt
+    if unmanage_until != "None":
+        unmanage_until_dt = datetime.fromisoformat(unmanage_until)
+    else:
+        tomorrow_dt = now_dt + timedelta(days=1)
+        unmanage_until_dt = tomorrow_dt
 
-    if not node:
-        module.fail_json(skipped=True, msg='Node not found')
-    elif node['unmanaged']:
-        if unmanage_from == node['unManageFrom'] and unmanage_until == node['unManageUntil']:
+    if node['unmanaged']:
+        if unmanage_from_dt.isoformat() == node['unmanagefrom'] and unmanage_until_dt.isoformat() == node['unmanageuntil']:
             module.exit_json(changed=False)
 
     try:
@@ -502,35 +603,40 @@ def unmanage_node(module):
                'Orion.Nodes',
                'Unmanage',
                node['netobjectid'],
-               unmanage_from,
-               unmanage_until,
+               str(unmanage_from_dt.astimezone(timezone.utc)).replace('+00:00', 'Z'),
+               str(unmanage_until_dt.astimezone(timezone.utc)).replace('+00:00', 'Z'),
                False  # use Absolute Time
         )
-        msg = "{0} will be unmanaged from {1} until {2}".format(
-            node['nodeid'],
-            unmanage_from,
-            unmanage_until
+        msg = "Node {0} will be unmanaged from {1} until {2}".format(
+            node['caption'],
+            unmanage_from_dt.astimezone().isoformat("T", "minutes"),
+            unmanage_until_dt.astimezone().isoformat("T", "minutes")
         )
-        module.exit_json(changed=True,  msg=msg)
+        module.exit_json(changed=True, msg=msg, ansible_facts=node)
     except Exception as e:
-        module.fail_json(msg=to_native(e), exception=traceback.format_exc())
+        module.fail_json(msg="Failed to unmanage {0}".format(node['caption']), ansible_facts=node)
 
 def mute_node(module):
-    now = datetime.now()
-    tomorrow = now + timedelta(days=1)
-    #Check if Node exists
     node = _get_node(module)
     if not node:
         module.exit_json(skipped=True, msg='Node not found')
 
+    now_dt = datetime.now(timezone.utc)
     unmanage_from = module.params['unmanage_from']
     unmanage_until = module.params['unmanage_until']
 
-    if unmanage_from == "None":
-        unmanage_from = now
-    if unmanage_until == "None":
-        unmanage_until = tomorrow
-    
+    if unmanage_from != "None":
+        unmanage_from_dt = datetime.fromisoformat(unmanage_from)
+    else:
+        unmanage_from_dt = now_dt
+    if unmanage_until != "None":
+        unmanage_until_dt = datetime.fromisoformat(unmanage_until)
+    else:
+        tomorrow_dt = now_dt + timedelta(days=1)
+        unmanage_until_dt = tomorrow_dt
+
+    unmanage_from_dt = unmanage_from_dt.astimezone()
+    unmanage_until_dt = unmanage_until_dt.astimezone()
 
     # Check if already muted
     suppressed = __SWIS__.invoke('Orion.AlertSuppression','GetAlertSuppressionState',[node['uri']])[0]
@@ -542,12 +648,21 @@ def mute_node(module):
 
     # Otherwise Mute Node with given parameters
     try:
-        __SWIS__.invoke('Orion.AlertSuppression', 'SuppressAlerts', [node['uri']], unmanage_from, unmanage_until)
-        node['changed'] = True
-        module.exit_json(changed=True, ansible_facts=node)
+        __SWIS__.invoke(
+                'Orion.AlertSuppression',
+                'SuppressAlerts',
+                [node['uri']],
+                str(unmanage_from_dt.astimezone(timezone.utc)).replace('+00:00', 'Z'),
+                str(unmanage_until_dt.astimezone(timezone.utc)).replace('+00:00', 'Z')
+        )
+        msg = "Node {0} will be muted from {1} until {2}".format(
+            node['caption'],
+            unmanage_from_dt.astimezone().isoformat("T", "minutes"),
+            unmanage_until_dt.astimezone().isoformat("T", "minutes")
+        )
+        module.exit_json(changed=True, msg=msg, ansible_facts=node)
     except Exception as e:
-        #module.fail_json(msg="Unable to mute {0}".format(node['caption']), ansible_facts=node)
-        module.fail_json(msg=to_native(e), exception=traceback.format_exc())
+        module.fail_json(msg="Failed to mute {0}".format(node['caption']), ansible_facts=node)
 
 def unmute_node(module):
     node = _get_node(module)
@@ -562,8 +677,7 @@ def unmute_node(module):
         module.exit_json(changed=False, ansible_facts=node)
     else:
         __SWIS__.invoke('Orion.AlertSuppression', 'ResumeAlerts',[node['uri']])
-        node['changed'] = True
-        module.exit_json(changed=True, ansible_facts=node)
+        module.exit_json(changed=True, msg="{0} has been unmuted".format(node['caption']), ansible_facts=node)
 
 
 def main():
