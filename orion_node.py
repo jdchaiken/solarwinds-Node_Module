@@ -7,7 +7,7 @@
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '2.0.1',
+    'metadata_version': '2.1.0',
     'status': ['preview'],
     'supported_by': 'community',
 }
@@ -21,16 +21,16 @@ description:
 version_added: "2.7"
 author: "Jarett D Chaiken (@jdchaiken)"
 options:
-    hostname:
+    orion_hostname:
         description:
             - Name of Orion host running SWIS service
         required: true
-    username:
+    orion_username:
         description:
             - Orion Username
             - Active Directory users may use DOMAIN\\username or username@DOMAIN format
         required: true
-    password:
+    orion_password:
         description:
             - Password for Orion user
         required: true
@@ -54,7 +54,7 @@ options:
         required: false
     name:
         description:
-            - Name of the node
+            - Hostname of the node
             - For Adding a node this field is required
             - For All other states field is optional and partial names are acceptable
         required: false
@@ -153,22 +153,22 @@ requirements:
 EXAMPLES = r'''
 - name:  Remove a node from Orion
   orion_node:
-    hostname: "<Hostname of orion server>"
-    username: Orion Username
-    password: Orion Password
+    orion_hostname: "<Hostname of orion server>"
+    orion_username: Orion Username
+    orion_password: Orion Password
     name: servername
     state: absent
-    
+
 - name: Mute hosts
   hosts: all
   gather_facts: no
-  tasks: 
+  tasks:
     - orion_node:
-        hostname: "{{solarwinds_host}}"
-        username: "{{solarwinds_username}}"
-        password: "{{solarwinds_password}}"
+        orion_hostname: "{{solarwinds_host}}"
+        orion_username: "{{solarwinds_username}}"
+        orion_password: "{{solarwinds_password}}"
         name: "{{inventory_hostname}}"
-        state: muted       
+        state: muted
         unmanage_from: "2020-03-13T20:58:22.033"
         unmanage_until: "2020-03-14T20:58:22.033"
       delegate_to: localhost
@@ -191,6 +191,17 @@ except Exception as e:
 
 __SWIS__ = None
 
+# These constants control how many times and at what interval this module
+# will check the status of the Orion discovery job to see if it has completed.
+# Total time will be retries multiplied by sleep seconds.
+DISCOVERY_STATUS_CHECK_RETRIES = 60
+DISCOVERY_RETRY_SLEEP_SECS = 3
+# These control the discovery timeouts within Orion itself.
+ORION_DISCOVERY_JOB_TIMEOUT_SECS=300
+ORION_DISCOVERY_SEARCH_TIMEOUT_MS=20000
+ORION_DISCOVERY_SNMP_TIMEOUT_MS=30000
+ORION_DISCOVERY_REPEAT_INTERVAL_MS=3000
+
 requests.urllib3.disable_warnings()
 
 
@@ -201,9 +212,9 @@ def run_module():
     global __SWIS__
 
     module_args = {
-        'hostname': {'required': True},
-        'username': {'required': True, 'no_log': True},
-        'password': {'required': True, 'no_log': True},
+        'orion_hostname': {'required': True},
+        'orion_username': {'required': True, 'no_log': True},
+        'orion_password': {'required': True, 'no_log': True},
         'state': {
             'required': False,
             'choices': [
@@ -248,9 +259,9 @@ def run_module():
         module.fail_json(msg='orionsdk required for this module')
 
     options = {
-        'hostname': module.params['hostname'],
-        'username': module.params['username'],
-        'password': module.params['password'],
+        'hostname': module.params['orion_hostname'],
+        'username': module.params['orion_username'],
+        'password': module.params['orion_password'],
     }
 
     __SWIS__ = SwisClient(**options)
@@ -280,21 +291,17 @@ def _get_node(module):
     node = {}
     if module.params['node_id'] is not None:
         results = __SWIS__.query(
-            'SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri  FROM Orion.Nodes WHERE NodeID = '
-            '@node_id',
+            'SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE NodeID = @node_id',
             node_id=module.params['node_id']
             )
     elif module.params['ip_address'] is not None:
         results = __SWIS__.query(
-            'SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri  FROM Orion.Nodes WHERE IPAddress = '
-            '@ip_address',
+            'SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE IPAddress = @ip_address',
             ip_address=module.params['ip_address']
         )
     elif module.params['name'] is not None:
         results = __SWIS__.query(
-            "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri "
-            "FROM Orion.Nodes WHERE Caption like "
-            "@name",
+            'SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE Caption = @name',
             name=module.params['name']
         )
     else:
@@ -434,14 +441,14 @@ def add_node(module):
     discovery_profile = {
         'Name': discovery_name,
         'EngineID': props['EngineID'],
-        'JobTimeoutSeconds': 300,
-        'SearchTimeoutMiliseconds': 10000,
-        'SnmpTimeoutMiliseconds': 20000,
+        'JobTimeoutSeconds': ORION_DISCOVERY_JOB_TIMEOUT_SECS,
+        'SearchTimeoutMiliseconds': ORION_DISCOVERY_SEARCH_TIMEOUT_MS,
+        'SnmpTimeoutMiliseconds': ORION_DISCOVERY_SNMP_TIMEOUT_MS,
+        'RepeatIntervalMiliseconds': ORION_DISCOVERY_REPEAT_INTERVAL_MS,
         'SnmpRetries': 2,
-        'RepeatIntervalMiliseconds': 3000,
-        'SnmpPort': 161,
+        'SnmpPort': module.params['snmp_port'],
         'HopCount': 0,
-        'PreferredSnmpVersion': 'SNMP3',
+        'PreferredSnmpVersion': 'SNMP' + str(module.params['snmp_version']),
         'DisableIcmp': False,
         'AllowDuplicateNodes': False,
         'IsAutoImport': True,
@@ -477,9 +484,9 @@ def add_node(module):
         else:
             discovery_active = False
         discovery_iter += 1
-        if discovery_iter >= 60:
+        if discovery_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
             module.fail_json(msg='Timeout while waiting for node discovery job to terminate', **props)
-        time.sleep(1)
+        time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
 
     # Retrieve Result and BatchID to find items added to new node by discovery
     try:
@@ -496,10 +503,22 @@ def add_node(module):
     # because mysteriously, the NodeID in the DiscoveredNodes table has no
     # bearing on the actual NodeID of the host(s) discovered.
     try:
-        discovered_nodes_res = __SWIS__.query("SELECT n.NodeID FROM Orion.DiscoveryProfiles dp JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID JOIN Orion.Nodes n ON n.Caption = dn.SysName WHERE dp.Name = @discovery_name", discovery_name=discovery_name)
+        discovered_nodes_res = __SWIS__.query("SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID JOIN Orion.Nodes n ON n.DNS = dn.DNS WHERE dp.Name = @discovery_name", discovery_name=discovery_name)
     except Exception as e:
         module.fail_json(msg='Failed to query discovered nodes: {}'.format(str(e)), **props)
-    discovered_node_id = discovered_nodes_res['results'][0]['NodeID']
+
+    try:
+        discovered_node = discovered_nodes_res['results'][0]
+    except Exception as e:
+        module.fail_json(msg="Node '{}' not found in discovery results: {}".format(discovery_name, str(e)), **props)
+
+    discovered_node_id = discovered_node['NodeID']
+    # Check if we need to re-set the caption for the discovered node
+    if discovered_node['Caption'] != module.params['name']:
+        try:
+            __SWIS__.update(discovered_node['Uri'], caption=module.params['name'])
+        except Exception as e:
+            module.fail_json(msg="Failed to update node Caption from '{}' to '{}': {}".format(discovered_node['Caption'], module.params['name'], str(e)), **props)
 
     # Retrieve all items added by discovery profile
     try:
