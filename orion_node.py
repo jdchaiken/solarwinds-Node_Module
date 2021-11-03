@@ -7,7 +7,7 @@
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '2.1.0',
+    'metadata_version': '2.1.1',
     'status': ['preview'],
     'supported_by': 'community',
 }
@@ -503,14 +503,14 @@ def add_node(module):
     # because mysteriously, the NodeID in the DiscoveredNodes table has no
     # bearing on the actual NodeID of the host(s) discovered.
     try:
-        discovered_nodes_res = __SWIS__.query("SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID JOIN Orion.Nodes n ON n.DNS = dn.DNS WHERE dp.Name = @discovery_name", discovery_name=discovery_name)
+        discovered_nodes_res = __SWIS__.query("SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID JOIN Orion.Nodes n ON n.DNS = dn.DNS OR n.Caption = dn.SysName WHERE dp.Name = @discovery_name", discovery_name=discovery_name)
     except Exception as e:
         module.fail_json(msg='Failed to query discovered nodes: {}'.format(str(e)), **props)
 
     try:
         discovered_node = discovered_nodes_res['results'][0]
     except Exception as e:
-        module.fail_json(msg="Node '{}' not found in discovery results: {}".format(discovery_name, str(e)), **props)
+        module.fail_json(msg="Node '{}' not found in discovery results: {}".format(module.params['name'], str(e)), **props)
 
     discovered_node_id = discovered_node['NodeID']
     # Check if we need to re-set the caption for the discovered node
