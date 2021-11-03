@@ -7,7 +7,7 @@
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '2.0.0',
+    'metadata_version': '2.0.1',
     'status': ['preview'],
     'supported_by': 'community',
 }
@@ -434,11 +434,11 @@ def add_node(module):
     discovery_profile = {
         'Name': discovery_name,
         'EngineID': props['EngineID'],
-        'JobTimeoutSeconds': 3600,
-        'SearchTimeoutMiliseconds': 5000,
-        'SnmpTimeoutMiliseconds': 5000,
+        'JobTimeoutSeconds': 300,
+        'SearchTimeoutMiliseconds': 10000,
+        'SnmpTimeoutMiliseconds': 20000,
         'SnmpRetries': 2,
-        'RepeatIntervalMiliseconds': 1800,
+        'RepeatIntervalMiliseconds': 3000,
         'SnmpPort': 161,
         'HopCount': 0,
         'PreferredSnmpVersion': 'SNMP3',
